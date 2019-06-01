@@ -1,17 +1,31 @@
 from typing import List, Dict
+from config import playlist_config, song_criteria, OAUTH_TOKEN
+from random import shuffle
 import dateutil.parser as parser
 import requests
 import pandas as pd
 import sys
 
-
-token = 'BQDBllyp3bktpOe5UCpAkBBiTz_dRE3ACqpnRuBEBKdnVIw6CBH8PDDTBPPwoL0REQj2C3z_HKZti_591JftMd1D2Sz6G1M0poppk8cyUfjgq5KwHDtlwzcCR8IebitQsrU1vVboe4gxP1oKf9qIF7EqFhT1nkucma6dOFbt0WcaoBWxOSIeTri1qZJSyf3KV_VCCBg8K4M-udc7uyHvAOgZk8nr4h8UP64YiE4bAy4neMFdHxzFzPnkruRDVtO2ZxoyN-S7v7RNHP4R'
-
-headers = {
+API_BASE = 'https://api.spotify.com/v1'
+HEADERS = {
     "Accept": "application/json",
     "Content-Type": "application/json",
-    "Authorization": "Bearer " + token
+    "Authorization": "Bearer " + OAUTH_TOKEN
 }
+
+
+def call_api_and_return_json(uri, http_method, json=None):
+
+    if http_method == 'GET':
+        r = requests.get(uri, headers=HEADERS)
+    elif http_method == 'POST':
+        assert json is not None, "Json not provided for POST request."
+        r = requests.post(uri, headers=HEADERS, json=json)
+    else:
+        raise ValueError("http_method not set or not in ['GET', 'POST'].")
+
+    r.raise_for_status()
+    return r.json()
 
 
 def chunk_list(l: List, n: int) -> List[List]:
@@ -37,16 +51,19 @@ def get_all_tracks() -> List:
 
     """
 
+    # Initialize tracks
     tracks = []
-    offset = 0
 
-    body = requests.get('https://api.spotify.com/v1/me/tracks?limit=50&offset=' + str(offset), headers=headers).json()
+    offset = 0
+    body = call_api_and_return_json(API_BASE + '/me/tracks?limit=50&offset=' + str(offset),
+                                    'GET')
     tracks = body['items']
 
     while len(body['items']) is 50:
 
         offset += 50
-        body = requests.get('https://api.spotify.com/v1/me/tracks?limit=50&offset=' + str(offset), headers=headers).json()
+        body = call_api_and_return_json(API_BASE + '/me/tracks?limit=50&offset=' + str(offset),
+                                        'GET')
         tracks += body['items']
 
     return tracks
@@ -74,8 +91,8 @@ def get_audio_features_dictionary(tracks: List) -> Dict:
 
     audio_features_dictionary = {}
     for track_ids in track_ids_chunked:
-        result = requests.get('https://api.spotify.com/v1/audio-features?ids=' + ','.join(track_ids), headers=headers).json()
-        for track in result['audio_features']:
+        body = call_api_and_return_json(API_BASE + '/audio-features?ids=' + ','.join(track_ids), 'GET')
+        for track in body['audio_features']:
             audio_features_dictionary[track['id']] = track
 
     return audio_features_dictionary
@@ -108,8 +125,8 @@ def get_artists_dictionary(tracks: List) -> Dict:
 
     artists_dictionary = {}
     for artist_ids in artist_ids_chunked:
-        result = requests.get('https://api.spotify.com/v1/artists?ids=' + ','.join(artist_ids), headers=headers).json()
-        for artist in result['artists']:
+        body = call_api_and_return_json(API_BASE + '/artists?ids=' + ','.join(artist_ids), 'GET')
+        for artist in body['artists']:
             artists_dictionary[artist['id']] = artist
 
     return artists_dictionary
@@ -181,9 +198,7 @@ def get_df_songs():
 
     # Create songs dataframe
     df_songs = pd.DataFrame(songs)
-    df_songs.set_index('id', inplace = True)
-
-    print(df_songs.describe())
+    df_songs.set_index('id', inplace=True)
 
     return df_songs
 
@@ -203,7 +218,7 @@ def get_genres_dictionary(artists_by_id):
 
     """
 
-    return {key : val['genres'] for key, val in artists_by_id.items()}
+    return {key: val['genres'] for key, val in artists_by_id.items()}
 
 
 def create_playlist_and_add_songs(playlist_data, spotify_uris):
@@ -225,35 +240,16 @@ def create_playlist_and_add_songs(playlist_data, spotify_uris):
 
     LIMIT = 100
 
-    r = requests.post('https://api.spotify.com/v1/users/bas_vonk/playlists',
-                      json=playlist_data,
-                      headers=headers)
-    playlist_id = r.json()['id']
+    body = call_api_and_return_json(API_BASE + '/users/bas_vonk/playlists', 'POST',
+                                    json=playlist_data)
+
+    playlist_id = body['id']
 
     spotify_uris_chunked = chunk_list(spotify_uris, LIMIT)
 
     for spotify_uris in spotify_uris_chunked:
-
-        data = {
-            "uris": spotify_uris
-        }
-
-        r = requests.post('https://api.spotify.com/v1/playlists/' + playlist_id + '/tracks',
-                          json=data,
-                          headers=headers)
-
-
-def print_selection(df_songs):
-    """Print selection.
-
-    Parameters
-    ----------
-    df_songs : type
-        Description of parameter `df_songs`.
-
-    """
-
-    print(df_songs[['title', 'artists', 'year']].loc[df_songs['select']])
+        call_api_and_return_json(API_BASE + '/playlists/' + playlist_id + '/tracks', 'POST',
+                                 json={"uris": spotify_uris})
 
 
 def main():
@@ -266,33 +262,29 @@ def main():
 
     """
 
-    # Get dataframe with all songs
+    # Get dataframe with all songs available for the user
     df_songs = get_df_songs()
 
-    # Define playlist data
-    playlist_data = {
-        "name": "Pop",
-        "description": "Test",
-        "public": False
-    }
+    # Apply the criteria to create an additional 'select column'
+    df_songs['select'] = df_songs.apply(lambda row: song_criteria(row), axis=1)
 
-    # Define the lambda function
-    #criteria = lambda row: row['year'] > 1989 and row['year'] < 2000
-    #criteria = lambda row: row['bpm'] > 120 and row['danceability'] > 0.8
-    criteria = lambda row: 'pop' in row['genres']
-
-    # Add dummy column with a selection boolean
-    df_songs['select'] = df_songs.apply(lambda row: criteria(row), axis=1)
-
-    # Print selection
-    print_selection(df_songs)
-
+    # Select the spotify URIs
     spotify_uris = df_songs['uri'].loc[df_songs['select']].tolist()
-
-    create_playlist_and_add_songs(playlist_data=playlist_data,
+    shuffle(spotify_uris)
+    create_playlist_and_add_songs(playlist_data=playlist_config,
                                   spotify_uris=spotify_uris)
+
+    return df_songs.loc[df_songs['select']]
 
 
 if __name__ == '__main__':
 
-    main()
+    try:
+
+        songs = main()
+        print(songs[['title', 'artists', 'year']].to_string())
+        print(songs.describe())
+        print("Playlist succesfully created!")
+
+    except requests.exceptions.HTTPError as error:
+        print(error)
